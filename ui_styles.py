@@ -2,11 +2,11 @@ import streamlit as st
 
 
 def apply_custom_styles():
-    """Injecte le CSS personnalisé sans altérer la page de connexion."""
+    """Injecte le CSS personnalisé pour la mise en page globale et la sidebar."""
     st.markdown(
         """
     <style>
-        /* Réduction de l'espace haut UNIQUEMENT lorsque l'utilisateur est connecté */
+        /* Réduction de l'espace haut quand l'utilisateur est connecté */
         div[data-testid="stSidebarNav"] + section .block-container,
         .stApp:has([data-testid="stSidebar"][aria-expanded="true"]) .block-container {
             padding-top: 1rem !important;
@@ -23,79 +23,54 @@ def apply_custom_styles():
             background-color: #f8f9fa;
         }
 
-        /* BANDEAU D'EN-TÊTE PRINCIPAL (MAIN HEADER) */
-        .main-header {
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            padding: 20px 24px;
-            border-radius: 12px;
-            color: white;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.07);
-        }
-        .main-header h1 {
-            color: white !important;
-            margin: 0;
-            font-size: 1.8rem;
-            font-weight: 600;
-        }
-        .main-header p {
-            margin-top: 5px;
-            opacity: 0.9;
-            font-size: 0.95rem;
-            margin-bottom: 0;
-        }
-
-        /* MÉTRIQUES ET CARTES D'INFORMATION */
-        [data-testid="stMetricValue"] {
-            font-size: 1.8rem !important;
-            font-weight: 700 !important;
-            color: #1e3c72 !important;
-        }
-        [data-testid="stMetric"] {
-            background-color: white;
-            padding: 15px 20px;
-            border-radius: 10px;
-            border-left: 5px solid #2a5298;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.04);
-        }
-
-        /* ONGLETS DE NAVIGATION (ST.TABS) */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 10px;
-        }
-        .stTabs [data-baseweb="tab"] {
-            height: 45px;
-            background-color: white;
-            border-radius: 8px;
-            padding: 10px 20px;
-            border: 1px solid #e2e8f0;
-            font-weight: 500;
-        }
-        .stTabs [aria-selected="true"] {
-            background-color: #1e3c72 !important;
-            color: white !important;
-            border-color: #1e3c72 !important;
-        }
-
-        /* SIDEBAR */
+        /* SIDEBAR CONTAINER */
         [data-testid="stSidebar"] {
             background-color: #ffffff;
             border-right: 1px solid #e2e8f0;
+        }
+
+        /* BORDURES FORCÉES SUR LES CHAMPS (INPUTS, SELECTBOX, NUMBER INPUT) DE LA SIDEBAR */
+        [data-testid="stSidebar"] input,
+        [data-testid="stSidebar"] div[role="combobox"] {
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 6px !important;
+            background-color: #ffffff !important;
+        }
+
+        /* Ciblage des conteneurs BaseWeb dans la Sidebar (notamment dans les expanders) */
+        [data-testid="stSidebar"] [data-baseweb="input"],
+        [data-testid="stSidebar"] [data-baseweb="select"] > div {
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 6px !important;
+            background-color: #ffffff !important;
+        }
+
+        /* Effet au survol des champs */
+        [data-testid="stSidebar"] input:hover,
+        [data-testid="stSidebar"] div[role="combobox"]:hover,
+        [data-testid="stSidebar"] [data-baseweb="input"]:hover,
+        [data-testid="stSidebar"] [data-baseweb="select"] > div:hover {
+            border-color: #94a3b8 !important;
+        }
+
+        /* Focus / Clic actif sur les champs */
+        [data-testid="stSidebar"] [data-baseweb="input"]:focus-within,
+        [data-testid="stSidebar"] [data-baseweb="select"] > div:focus-within {
+            border-color: #2563eb !important;
+            box-shadow: 0 0 0 1px #2563eb !important;
         }
     </style>
     """,
         unsafe_allow_html=True,
     )
+
+
 def inject_modern_css():
+    """Injecte les styles modernes pour le contenu principal (Main Container)."""
     st.markdown(
         """
     <style>
-        /* Fond global de l'application */
-        .main {
-            background-color: #f8f9fa;
-        }
-
-        /* En-tête principal en bandeau gradient */
+        /* Bandeau d'en-tête principal */
         .main-header {
             background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
             padding: 24px;
@@ -117,7 +92,7 @@ def inject_modern_css():
             margin-bottom: 0;
         }
 
-        /* Modernisation des métriques (Carte de l'effectif) */
+        /* Modernisation des cartes métriques */
         [data-testid="stMetricValue"] {
             font-size: 1.8rem !important;
             font-weight: 700 !important;
@@ -153,10 +128,11 @@ def inject_modern_css():
         unsafe_allow_html=True,
     )
 
+
 @st.dialog("🔑 Modifier mon mot de passe")
 def reset_password_dialog():
     """Boîte de dialogue pour le changement de mot de passe."""
-    import auth  # Import local pour éviter les imports circulaires
+    import auth
 
     old_p = st.text_input("🆕 Ancien mot de passe", type="password")
     new_p = st.text_input("🔄 Nouveau mot de passe", type="password")

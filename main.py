@@ -5,7 +5,10 @@ from auth_view import render_login_page
 import database as db
 import excel_loader as el
 import evaluation_view
-from ui_styles import apply_custom_styles, reset_password_dialog,inject_modern_css
+import rh_config_view
+import quarter_utils
+import dashboard_view
+from ui_styles import apply_custom_styles, reset_password_dialog, inject_modern_css
 
 # Configuration de la page Streamlit
 st.set_page_config(
@@ -41,7 +44,11 @@ else:
 
     current_user = st.session_state["username"]
     user_role = st.session_state["role"]
+
+    # --- HÉRARCHIE ET MATRICE DES DROITS DES 3 RÔLES ---
     is_admin = user_role == "Administrateur"
+    is_rh = user_role in ["RH", "Administrateur"]  # Seuls RH et Admin voient les menus d'administration RH
+    is_dg = user_role == "DG"
 
     # Récupération du département de l'utilisateur connecté
     user_dept = auth.get_user_department(current_user)
@@ -65,13 +72,17 @@ else:
         st.session_state["role"] = None
         st.rerun()
 
-    # --- SECTION ADMINISTRATION (ADMIN UNIQUEMENT) ---
-    if is_admin:
+    # --- SECTION RH ET ADMINISTRATION (ACCESSIBLE AUX RH ET DG) ---
+    if is_rh:
         st.sidebar.markdown("---")
-        st.sidebar.title("🛠️ Administration")
+        st.sidebar.title("⚙️ Administration & RH")
 
-        # --- SECTION 1 : CRÉATION D'UTILISATEUR ---
-        with st.sidebar.expander("➕ Créer un utilisateur / Manager"):
+        # 1. PARAMÉTRAGE DU COEFFICIENT USINE
+        with st.sidebar.expander("🏭 Coefficient Usine Trimestriel"):
+            rh_config_view.render_rh_config_view()
+
+        # 2. CRÉATION D'UTILISATEUR
+        with st.sidebar.expander("➕ Créer un utilisateur"):
             new_u = st.text_input("Identifiant / Matricule", key="admin_new_u")
             new_nom = st.text_input(
                 "Nom complet (Ex: Jean Dupont)", key="admin_new_nom"
@@ -81,7 +92,7 @@ else:
             )
             new_role = st.selectbox(
                 "Rôle :",
-                options=["Manager", "Administrateur"],
+                options=["Manager", "RH", "DG", "Administrateur"],
                 key="admin_new_role",
             )
 
@@ -93,7 +104,7 @@ else:
 
             selected_dept = st.selectbox(
                 "Département assigné :",
-                options=["(Aucun / Admin)"] + deps_list,
+                options=["(Aucun / RH / DG / Admin)"] + deps_list,
                 key="admin_new_dept",
             )
 
@@ -101,17 +112,17 @@ else:
                 if new_u and new_p:
                     dept_val = (
                         None
-                        if selected_dept == "(Aucun / Admin)"
+                        if selected_dept == "(Aucun / RH / DG / Admin)"
                         else selected_dept
                     )
                     nom_val = new_nom.strip() if new_nom else new_u.strip()
 
                     if auth.create_user(
-                            username=new_u.strip(),
-                            password=new_p,
-                            nom_complet=nom_val,
-                            role=new_role,
-                            department=dept_val,
+                        username=new_u.strip(),
+                        password=new_p,
+                        nom_complet=nom_val,
+                        role=new_role,
+                        department=dept_val,
                     ):
                         st.success(
                             f"Compte '{new_u}' ({new_role}) créé avec succès !"
@@ -123,7 +134,7 @@ else:
                         "Veuillez remplir au moins l'identifiant et le mot de passe."
                     )
 
-        # --- SECTION 2 : AFFECTATION DES EMPLOIÉS ---
+        # 3. AFFECTATION DES EMPLOIÉS
         with st.sidebar.expander("🎯 Affecter des employés à un Manager"):
             all_users = auth.get_all_users()
 
@@ -133,9 +144,9 @@ else:
                 )
 
                 if (
-                        not df_employees.empty
-                        and "Matricule" in df_employees.columns
-                        and "Employé" in df_employees.columns
+                    not df_employees.empty
+                    and "Matricule" in df_employees.columns
+                    and "Employé" in df_employees.columns
                 ):
                     df_temp = df_employees.copy()
                     df_temp["Matricule_Str"] = df_temp["Matricule"].astype(str)
@@ -188,10 +199,10 @@ else:
                     ]
 
                     if st.button(
-                            "Enregistrer les affectations", use_container_width=True
+                        "Enregistrer les affectations", use_container_width=True
                     ):
                         if auth.save_user_assignments(
-                                selected_evaluator, selected_mats_to_save
+                            selected_evaluator, selected_mats_to_save
                         ):
                             st.success("Affectations enregistrées !")
                         else:
@@ -199,7 +210,7 @@ else:
                 else:
                     st.warning("Colonnes 'Matricule' ou 'Employé' manquantes dans Excel.")
 
-        # --- SECTION 3 : APERÇU DES EFFECTIFS PAR MANAGER ---
+        # 4. APERÇU DES EFFECTIFS PAR MANAGER
         with st.sidebar.expander("📊 Vue d'ensemble des effectifs"):
             st.markdown("### Total employés par Manager")
             summary_data = []
@@ -208,7 +219,6 @@ else:
             for u in users_list:
                 m_dept = auth.get_user_department(u)
 
-                # Charger affectations BDD pour cet utilisateur
                 conn = db.get_connection()
                 u_mats = []
                 if conn:
@@ -224,7 +234,6 @@ else:
                     finally:
                         conn.close()
 
-                # Calcul sécurisé du total
                 if not df_employees.empty:
                     c1 = (
                         df_employees["Département"]
@@ -247,7 +256,7 @@ else:
                     if "Matricule" in res_df.columns:
                         res_df = res_df[
                             res_df["Matricule"].astype(str) != str(u)
-                            ]
+                        ]
 
                     total_count = len(res_df)
                 else:
@@ -265,6 +274,7 @@ else:
                 summary_data, hide_index=True, use_container_width=True
             )
 
+        # 5. RÉINITIALISATION DU MOT DE PASSE
         with st.sidebar.expander("🔑 Réinitialiser un mot de passe"):
             all_users_list = auth.get_all_users()
             if all_users_list:
@@ -280,11 +290,11 @@ else:
                 )
 
                 if st.button(
-                        "Réinitialiser le mot de passe", use_container_width=True
+                    "Réinitialiser le mot de passe", use_container_width=True
                 ):
                     if user_to_reset and temp_password:
                         if auth.admin_reset_password(
-                                user_to_reset, temp_password
+                            user_to_reset, temp_password
                         ):
                             st.success(
                                 f"Mot de passe de '{user_to_reset}' réinitialisé !"
@@ -294,60 +304,56 @@ else:
                     else:
                         st.warning("Veuillez saisir un mot de passe.")
 
-        # --- SECTION : IMPORT TEMPORAIRE DES SALAIRES (ADMIN) ---
+        # 6. IMPORT TEMPORAIRE DES SALAIRES
         with st.sidebar.expander("💰 Import Temporaire des Salaires"):
-                    st.caption(
-                        "Chargement en mémoire vive (non sauvegardé en BDD pour confidentialité)."
+            st.caption(
+                "Chargement en mémoire vive (non sauvegardé en BDD pour confidentialité)."
+            )
+            salaires_file = st.file_uploader(
+                "Fichier Excel des salaires (Colonnes : Matricule, Salaire)",
+                type=["xlsx", "xls"],
+                key="salaires_uploader",
+            )
+
+            if salaires_file is not None:
+                try:
+                    df_sal = pd.read_excel(salaires_file)
+
+                    df_sal.columns = [c.strip().lower() for c in df_sal.columns]
+
+                    col_mat = next(
+                        (c for c in df_sal.columns if "mat" in c), None
                     )
-                    salaires_file = st.file_uploader(
-                        "Fichier Excel des salaires (Colonnes : Matricule, Salaire)",
-                        type=["xlsx", "xls"],
-                        key="salaires_uploader",
+                    col_sal = next(
+                        (c for c in df_sal.columns if "sal" in c), None
                     )
 
-                    if salaires_file is not None:
-                        try:
-                            df_sal = pd.read_excel(salaires_file)
+                    if col_mat and col_sal:
+                        df_sal[col_mat] = df_sal[col_mat].astype(str).str.strip()
+                        st.session_state["salaires_temp"] = dict(
+                            zip(df_sal[col_mat], df_sal[col_sal])
+                        )
+                        st.success(
+                            f"✅ {len(st.session_state['salaires_temp'])} salaires chargés en mémoire !"
+                        )
+                    else:
+                        st.error(
+                            "Le fichier doit contenir au moins une colonne 'Matricule' et 'Salaire'."
+                        )
+                except Exception as e:
+                    st.error(f"Erreur lors de la lecture du fichier : {e}")
 
-                            # Standardisation des noms de colonnes
-                            df_sal.columns = [c.strip().lower() for c in df_sal.columns]
-
-                            # Détection des colonnes Matricule et Salaire
-                            col_mat = next(
-                                (c for c in df_sal.columns if "mat" in c), None
-                            )
-                            col_sal = next(
-                                (c for c in df_sal.columns if "sal" in c), None
-                            )
-
-                            if col_mat and col_sal:
-                                # Stockage sous forme de dictionnaire {Matricule: Salaire}
-                                df_sal[col_mat] = df_sal[col_mat].astype(str).str.strip()
-                                st.session_state["salaires_temp"] = dict(
-                                    zip(df_sal[col_mat], df_sal[col_sal])
-                                )
-                                st.success(
-                                    f"✅ {len(st.session_state['salaires_temp'])} salaires chargés en mémoire !"
-                                )
-                            else:
-                                st.error(
-                                    "Le fichier doit contenir au moins une colonne 'Matricule' et 'Salaire'."
-                                )
-                        except Exception as e:
-                            st.error(f"Erreur lors de la lecture du fichier : {e}")
-
-                    # Bouton de vidage de la mémoire des salaires
-                    if "salaires_temp" in st.session_state and st.session_state["salaires_temp"]:
-                        if st.button("🗑️ Vider les salaires en mémoire", use_container_width=True):
-                            del st.session_state["salaires_temp"]
-                            st.rerun()
+            if "salaires_temp" in st.session_state and st.session_state["salaires_temp"]:
+                if st.button("🗑️ Vider les salaires en mémoire", use_container_width=True):
+                    del st.session_state["salaires_temp"]
+                    st.rerun()
 
     # --- ENTÊTE PRINCIPAL STYLISÉ ---
     st.markdown(
         """
         <div class="main-header">
             <h1>📋 Portail d'Évaluation RH</h1>
-            <p>Gestion et suivi des performances des collaborateurs</p>
+            <p>Gestion et suivi des performances trimestrielles des collaborateurs</p>
         </div>
     """,
         unsafe_allow_html=True,
@@ -365,6 +371,29 @@ else:
                 "Aucun employé trouvé. Veuillez vérifier que le fichier 'employes.xlsx' est présent."
             )
         else:
+            # --- SELECTION DU TRIMESTRE ET DE L'ANNÉE ---
+            curr_q, curr_y = quarter_utils.get_current_quarter_info()
+
+            col_q1, col_q2 = st.columns(2)
+            with col_q1:
+                selected_year = st.number_input(
+                    "Année d'évaluation :",
+                    min_value=2024,
+                    max_value=2030,
+                    value=curr_y,
+                )
+            with col_q2:
+                selected_quarter = st.selectbox(
+                    "Trimestre :",
+                    options=[1, 2, 3, 4],
+                    index=curr_q - 1,
+                    format_func=lambda q: quarter_utils.get_quarter_label(
+                        q, selected_year
+                    ),
+                )
+
+            st.divider()
+
             # 1. Récupérer les matricules affectés en BDD
             conn = db.get_connection()
             explicit_mats = []
@@ -382,10 +411,12 @@ else:
                 finally:
                     conn.close()
 
-            # 2. Filtrage CUMULATIF (Département + Affectations)
-            if is_admin:
+            # 2. FILTRAGE DE LA LISTE DES EMPLOYÉS SELON LE RÔLE
+            if is_dg:
+                # Le DG voit TOUS les employés sans restriction
                 filtered_df = df_employees.copy()
             else:
+                # Le RH et le Manager voient les employés de leur département ou affectations explicites
                 cond_dept = (
                     df_employees["Département"]
                     .astype(str)
@@ -404,11 +435,11 @@ else:
 
                 filtered_df = df_employees[cond_dept | cond_assigned]
 
-            # Exclure le manager connecté
+            # Exclure l'utilisateur connecté lui-même
             if "Matricule" in filtered_df.columns:
                 filtered_df = filtered_df[
                     filtered_df["Matricule"].astype(str) != str(current_user)
-                    ]
+                ]
 
             employes_list = (
                 filtered_df["Employé"].tolist()
@@ -438,7 +469,7 @@ else:
             if selected_emp:
                 emp_info = filtered_df[
                     filtered_df["Employé"] == selected_emp
-                    ].iloc[0]
+                ].iloc[0]
 
                 st.markdown("---")
                 c1, c2, c3 = st.columns(3)
@@ -449,20 +480,18 @@ else:
                 )
                 st.markdown("---")
 
-                # --- RÉCUPÉRATION SÉCURISÉE DU SALAIRE (TEMPORAIRE / EXCEL) ---
+                # --- RÉCUPÉRATION SÉCURISÉE DU SALAIRE ---
                 current_mat = str(emp_info.get("Matricule", "")).strip()
 
-                # Priorité 1 : Fichier temporaire chargé par l'Admin en session
                 salaires_map = st.session_state.get("salaires_temp", {})
                 sal_val = salaires_map.get(current_mat)
 
-                # Priorité 2 : Fichier employés standard s'il contient déjà le salaire
                 if sal_val is None:
                     sal_val = (
-                            emp_info.get("Salaire_Base")
-                            or emp_info.get("Salaire")
-                            or emp_info.get("Salaire de base")
-                            or 0.0
+                        emp_info.get("Salaire_Base")
+                        or emp_info.get("Salaire")
+                        or emp_info.get("Salaire de base")
+                        or 0.0
                     )
 
                 try:
@@ -473,11 +502,16 @@ else:
                 # --- APPEL DE LA VUE D'ÉVALUATION ---
                 evaluation_view.render_evaluation_page(
                     target_name=selected_emp,
+                    target_id=current_mat,
                     base_salary=sal_val,
-                    is_admin=is_admin,  # Transmet le rôle pour gérer le masquage ou l'affichage
+                    is_admin=is_admin,
+                    is_dg=is_dg,
+                    selected_year=selected_year,
+                    selected_quarter=selected_quarter,
                 )
 
     # --- ONGLET 2 : DASHBOARD & SUIVI ---
     with tab_dash:
-        st.subheader("📊 Tableau de bord des évaluations")
-        st.info("Module de suivi prêt à être raccordé aux sauvegardes BDD.")
+        dashboard_view.render_dashboard_page(
+            user_role=user_role, username=st.session_state.get("username")
+        )
