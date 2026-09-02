@@ -3,8 +3,7 @@ import pyodbc
 import hashlib
 from dotenv import load_dotenv
 
-load_dotenv()
-
+#load_dotenv()
 
 def get_connection():
     server = os.getenv("DB_SERVER", "172.31.221.249")
@@ -17,7 +16,6 @@ def get_connection():
     except Exception as e:
         print(f"Erreur connexion BDD: {e}")
         return None
-
 
 def init_db():
     conn = get_connection()
@@ -108,7 +106,6 @@ def init_db():
         finally:
             conn.close()
 
-# --- FONCTIONS DE GESTION DU COEFFICIENT RH ---
 def get_coef_usine_by_quarter(year: int, quarter: int) -> float:
     """Récupère le Coef Usine RH du trimestre (4.0% par défaut si non paramétré)."""
     conn = get_connection()
@@ -182,104 +179,113 @@ def get_active_quarter_config():
             conn.close()
     return config
 
+def save_or_update_employee(matricule, nom_complet, poste, department, evaluator_username):
+    """Insère ou met à jour un employé dans la table dbo.employees."""
+    conn = get_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            query = """
+                IF EXISTS (SELECT 1 FROM dbo.employees WHERE LTRIM(RTRIM(CAST(matricule AS VARCHAR))) = LTRIM(RTRIM(CAST(? AS VARCHAR))))
+                BEGIN
+                    UPDATE dbo.employees
+                    SET nom_complet = ?, poste = ?, department = ?, evaluator_username = ?, updated_at = GETDATE()
+                    WHERE LTRIM(RTRIM(CAST(matricule AS VARCHAR))) = LTRIM(RTRIM(CAST(? AS VARCHAR)))
+                END
+                ELSE
+                BEGIN
+                    INSERT INTO dbo.employees (matricule, nom_complet, poste, department, evaluator_username)
+                    VALUES (?, ?, ?, ?, ?)
+                END
+            """
+            mat = str(matricule).strip()
+            nom = str(nom_complet).strip()
+            pst = str(poste).strip() if poste else ""
+            dept = str(department).strip() if department else ""
+            eval_usr = (
+                str(evaluator_username).strip() if evaluator_username else ""
+            )
+
+            cursor.execute(
+                query,
+                (
+                    mat,
+                    nom,
+                    pst,
+                    dept,
+                    eval_usr,
+                    mat,
+                    mat,
+                    nom,
+                    pst,
+                    dept,
+                    eval_usr,
+                ),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Erreur SQL save_employee: {e}")
+            return False
+        finally:
+            conn.close()
+    return False
+
 def get_dashboard_data_by_role(user_role, username, year, quarter):
-    """Récupère les collaborateurs et leurs notes avec gestion des espaces et secours SQL."""
+    """Récupère les évaluations en effectuant le LEFT JOIN sur dbo.employees."""
     conn = get_connection()
     results = []
     if conn:
         try:
             cursor = conn.cursor()
-
-            # Extraction de la valeur numérique du trimestre (ex: '3')
             q_clean = str(quarter).replace("T", "").strip()
             user_clean = str(username).strip()
 
             if user_role == "Manager":
-                # Recherche des collaborateurs assignés au Manager
                 query = """
                     SELECT 
-                        u.matricule, 
-                        u.nom_complet, 
-                        u.department, 
+                        e.target_matricule, 
+                        ISNULL(emp.nom_complet, 'Employé ' + CAST(e.target_matricule AS VARCHAR)), 
+                        ISNULL(emp.department, 'N/A'), 
                         e.note_totale, 
                         e.prime_finale, 
                         e.updated_at
-                    FROM dbo.user_assignments ua
-                    JOIN dbo.users u 
-                        ON LTRIM(RTRIM(CAST(ua.target_matricule AS VARCHAR))) = LTRIM(RTRIM(CAST(u.matricule AS VARCHAR)))
-                    LEFT JOIN dbo.evaluations e 
-                        ON LTRIM(RTRIM(CAST(u.matricule AS VARCHAR))) = LTRIM(RTRIM(CAST(e.target_matricule AS VARCHAR)))
-                       AND CAST(e.year AS VARCHAR) = CAST(? AS VARCHAR) 
-                       AND CAST(e.quarter AS VARCHAR) = CAST(? AS VARCHAR)
-                    WHERE LTRIM(RTRIM(CAST(ua.evaluator_username AS VARCHAR))) = LTRIM(RTRIM(CAST(? AS VARCHAR)))
+                    FROM dbo.evaluations e
+                    LEFT JOIN dbo.employees emp 
+                        ON LTRIM(RTRIM(CAST(emp.matricule AS VARCHAR))) = LTRIM(RTRIM(CAST(e.target_matricule AS VARCHAR)))
+                    WHERE CAST(e.year AS VARCHAR) = CAST(? AS VARCHAR) 
+                      AND CAST(e.quarter AS VARCHAR) = CAST(? AS VARCHAR)
+                      AND (
+                          LTRIM(RTRIM(CAST(e.evaluator_username AS VARCHAR))) = LTRIM(RTRIM(CAST(? AS VARCHAR)))
+                          OR LTRIM(RTRIM(CAST(emp.evaluator_username AS VARCHAR))) = LTRIM(RTRIM(CAST(? AS VARCHAR)))
+                      )
                 """
-                cursor.execute(query, (year, q_clean, user_clean))
-                rows = cursor.fetchall()
-
-                # FALLBACK MANAGER : Si aucune affectation n'est trouvée dans user_assignments,
-                # on affiche au moins les employés où il apparaît comme évaluateur dans evaluations
-                if not rows:
-                    query_fallback = """
-                        SELECT 
-                            u.matricule, 
-                            u.nom_complet, 
-                            u.department, 
-                            e.note_totale, 
-                            e.prime_finale, 
-                            e.updated_at
-                        FROM dbo.evaluations e
-                        JOIN dbo.users u 
-                            ON LTRIM(RTRIM(CAST(u.matricule AS VARCHAR))) = LTRIM(RTRIM(CAST(e.target_matricule AS VARCHAR)))
-                        WHERE CAST(e.year AS VARCHAR) = CAST(? AS VARCHAR) 
-                          AND CAST(e.quarter AS VARCHAR) = CAST(? AS VARCHAR)
-                          AND LTRIM(RTRIM(CAST(e.evaluator_username AS VARCHAR))) = LTRIM(RTRIM(CAST(? AS VARCHAR)))
-                    """
-                    cursor.execute(query_fallback, (year, q_clean, user_clean))
-                    rows = cursor.fetchall()
-
-            elif user_role == "RH":
+                cursor.execute(query, (year, q_clean, user_clean, user_clean))
+            else:
+                # RH / DG / Administrateur
                 query = """
                     SELECT 
-                        u.matricule, 
-                        u.nom_complet, 
-                        u.department, 
+                        e.target_matricule, 
+                        ISNULL(emp.nom_complet, 'Employé ' + CAST(e.target_matricule AS VARCHAR)), 
+                        ISNULL(emp.department, 'N/A'), 
                         e.note_totale, 
                         e.prime_finale, 
                         e.updated_at
-                    FROM dbo.users u
-                    LEFT JOIN dbo.evaluations e 
-                        ON LTRIM(RTRIM(CAST(u.matricule AS VARCHAR))) = LTRIM(RTRIM(CAST(e.target_matricule AS VARCHAR)))
-                       AND CAST(e.year AS VARCHAR) = CAST(? AS VARCHAR) 
-                       AND CAST(e.quarter AS VARCHAR) = CAST(? AS VARCHAR)
-                    WHERE u.role NOT IN ('Administrateur', 'DG')
+                    FROM dbo.evaluations e
+                    LEFT JOIN dbo.employees emp 
+                        ON LTRIM(RTRIM(CAST(emp.matricule AS VARCHAR))) = LTRIM(RTRIM(CAST(e.target_matricule AS VARCHAR)))
+                    WHERE CAST(e.year AS VARCHAR) = CAST(? AS VARCHAR) 
+                      AND CAST(e.quarter AS VARCHAR) = CAST(? AS VARCHAR)
                 """
                 cursor.execute(query, (year, q_clean))
-                rows = cursor.fetchall()
 
-            else:  # DG / Administrateur
-                query = """
-                    SELECT 
-                        u.matricule, 
-                        u.nom_complet, 
-                        u.department, 
-                        e.note_totale, 
-                        e.prime_finale, 
-                        e.updated_at
-                    FROM dbo.users u
-                    LEFT JOIN dbo.evaluations e 
-                        ON LTRIM(RTRIM(CAST(u.matricule AS VARCHAR))) = LTRIM(RTRIM(CAST(e.target_matricule AS VARCHAR)))
-                       AND CAST(e.year AS VARCHAR) = CAST(? AS VARCHAR) 
-                       AND CAST(e.quarter AS VARCHAR) = CAST(? AS VARCHAR)
-                """
-                cursor.execute(query, (year, q_clean))
-                rows = cursor.fetchall()
-
+            rows = cursor.fetchall()
             for r in rows:
                 results.append(
                     {
                         "matricule": r[0],
                         "nom_complet": r[1],
-                        "department": r[2] or "N/A",
+                        "department": r[2],
                         "note_totale": r[3],
                         "prime_finale": r[4],
                         "statut": (
@@ -288,12 +294,10 @@ def get_dashboard_data_by_role(user_role, username, year, quarter):
                         "date_evaluation": r[5],
                     }
                 )
-
         except Exception as e:
             print(f"Erreur SQL Dashboard: {e}")
         finally:
             conn.close()
-
     return results
 
 def get_evolution_scores(matricule):

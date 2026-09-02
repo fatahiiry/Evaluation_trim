@@ -3,11 +3,11 @@ import streamlit as st
 import auth
 from auth_view import render_login_page
 import database as db
-import excel_loader as el
 import evaluation_view
 import rh_config_view
 import quarter_utils
 import dashboard_view
+import employee_management_view
 from ui_styles import apply_custom_styles, reset_password_dialog, inject_modern_css
 
 # Configuration de la page Streamlit
@@ -28,9 +28,6 @@ if "username" not in st.session_state:
 if "role" not in st.session_state:
     st.session_state["role"] = None
 
-# Charger les employés Excel
-df_employees = el.load_excel_employees()
-
 # --- 1. MIRE DE CONNEXION ---
 if not st.session_state["authenticated"]:
     render_login_page()
@@ -45,9 +42,9 @@ else:
     current_user = st.session_state["username"]
     user_role = st.session_state["role"]
 
-    # --- HÉRARCHIE ET MATRICE DES DROITS DES 3 RÔLES ---
+    # --- HÉRARCHIE ET MATRICE DES DROITS ---
     is_admin = user_role == "Administrateur"
-    is_rh = user_role in ["RH", "Administrateur"]  # Seuls RH et Admin voient les menus d'administration RH
+    is_rh = user_role in ["RH", "Administrateur"]  # Accès administration RH
     is_dg = user_role == "DG"
 
     # Récupération du département de l'utilisateur connecté
@@ -72,7 +69,18 @@ else:
         st.session_state["role"] = None
         st.rerun()
 
-    # --- SECTION RH ET ADMINISTRATION (ACCESSIBLE AUX RH ET DG) ---
+    # Charger la liste globale des employés depuis SQL Server pour les menus d'admin
+    conn = db.get_connection()
+    df_employees = pd.DataFrame()
+    if conn:
+        try:
+            df_employees = pd.read_sql("SELECT matricule AS Matricule, nom_complet AS Employé, poste AS Poste, department AS Département, evaluator_username FROM dbo.employees", conn)
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    # --- SECTION RH ET ADMINISTRATION (ACCESSIBLE AUX RH ET ADMIN) ---
     if is_rh:
         st.sidebar.markdown("---")
         st.sidebar.title("⚙️ Administration & RH")
@@ -208,71 +216,7 @@ else:
                         else:
                             st.error("Erreur lors de l'enregistrement.")
                 else:
-                    st.warning("Colonnes 'Matricule' ou 'Employé' manquantes dans Excel.")
-
-        # 4. APERÇU DES EFFECTIFS PAR MANAGER
-        with st.sidebar.expander("📊 Vue d'ensemble des effectifs"):
-            st.markdown("### Total employés par Manager")
-            summary_data = []
-            users_list = auth.get_all_users()
-
-            for u in users_list:
-                m_dept = auth.get_user_department(u)
-
-                conn = db.get_connection()
-                u_mats = []
-                if conn:
-                    try:
-                        cursor = conn.cursor()
-                        cursor.execute(
-                            "SELECT target_matricule FROM user_assignments WHERE evaluator_username = ?",
-                            (u,),
-                        )
-                        u_mats = [str(r[0]) for r in cursor.fetchall()]
-                    except Exception:
-                        pass
-                    finally:
-                        conn.close()
-
-                if not df_employees.empty:
-                    c1 = (
-                        df_employees["Département"]
-                        .astype(str)
-                        .str.strip()
-                        .str.upper()
-                        == str(m_dept).strip().upper()
-                        if (m_dept and "Département" in df_employees.columns)
-                        else pd.Series(False, index=df_employees.index)
-                    )
-
-                    c2 = (
-                        df_employees["Matricule"].astype(str).isin(u_mats)
-                        if (u_mats and "Matricule" in df_employees.columns)
-                        else pd.Series(False, index=df_employees.index)
-                    )
-
-                    res_df = df_employees[c1 | c2]
-
-                    if "Matricule" in res_df.columns:
-                        res_df = res_df[
-                            res_df["Matricule"].astype(str) != str(u)
-                        ]
-
-                    total_count = len(res_df)
-                else:
-                    total_count = 0
-
-                summary_data.append(
-                    {
-                        "Manager": u,
-                        "Département": m_dept or "N/A",
-                        "Effectif": total_count,
-                    }
-                )
-
-            st.dataframe(
-                summary_data, hide_index=True, use_container_width=True
-            )
+                    st.warning("Aucun employé trouvé en BDD SQL.")
 
         # 5. RÉINITIALISATION DU MOT DE PASSE
         with st.sidebar.expander("🔑 Réinitialiser un mot de passe"):
@@ -359,64 +303,56 @@ else:
         unsafe_allow_html=True,
     )
 
-    # --- NAVIGATION PAR ONGLETS ---
-    tab_eval, tab_dash = st.tabs(
-        ["📝 Faire une évaluation", "📊 Dashboard & Suivi Global"]
-    )
+    # --- FONCTION INTERNE DE RENDU DU FORMULAIRE D'ÉVALUATION ---
+    def render_evaluation_tab_content():
+        config = db.get_active_quarter_config()
+        selected_year = config["year"]
+        selected_quarter = config["quarter"]
 
-    # --- ONGLET 1 : FAIRE UNE ÉVALUATION ---
-    with tab_eval:
+        st.caption(
+            f"🗓️ Période d'évaluation active : **Trimestre {selected_quarter} - {selected_year}**"
+        )
+        st.divider()
+
         if df_employees.empty:
             st.warning(
-                "Aucun employé trouvé. Veuillez vérifier que le fichier 'employes.xlsx' est présent."
+                "⚠️ Aucun collaborateur trouvé en base de données. Veuillez ajouter des employés via l'onglet 'Gestion Collaborateurs'."
             )
         else:
-            # --- SELECTION DU TRIMESTRE ET DE L'ANNÉE ---
-            curr_q, curr_y = quarter_utils.get_current_quarter_info()
-
-            col_q1, col_q2 = st.columns(2)
-            with col_q1:
-                selected_year = st.number_input(
-                    "Année d'évaluation :",
-                    min_value=2024,
-                    max_value=2030,
-                    value=curr_y,
-                )
-            with col_q2:
-                selected_quarter = st.selectbox(
-                    "Trimestre :",
-                    options=[1, 2, 3, 4],
-                    index=curr_q - 1,
-                    format_func=lambda q: quarter_utils.get_quarter_label(
-                        q, selected_year
-                    ),
-                )
-
-            st.divider()
-
-            # 1. Récupérer les matricules affectés en BDD
             conn = db.get_connection()
             explicit_mats = []
             if conn:
                 try:
                     cursor = conn.cursor()
                     cursor.execute(
-                        "SELECT target_matricule FROM user_assignments WHERE evaluator_username = ?",
-                        (current_user,),
+                        "SELECT target_matricule FROM dbo.user_assignments WHERE LTRIM(RTRIM(CAST(evaluator_username AS VARCHAR))) = ?",
+                        (str(current_user).strip(),),
                     )
                     rows = cursor.fetchall()
-                    explicit_mats = [str(r[0]) for r in rows]
+                    explicit_mats = [str(r[0]).strip() for r in rows]
                 except Exception:
                     pass
                 finally:
                     conn.close()
 
-            # 2. FILTRAGE DE LA LISTE DES EMPLOYÉS SELON LE RÔLE
-            if is_dg:
-                # Le DG voit TOUS les employés sans restriction
+            # --- FILTRAGE DU PÉRIMÈTRE SELON LE RÔLE ---
+            if is_dg or is_admin:
                 filtered_df = df_employees.copy()
+
+                # Ajout du filtre par Département pour la Direction Générale / Admin
+                if "Département" in filtered_df.columns:
+                    list_depts = sorted(
+                        [d for d in filtered_df["Département"].dropna().unique() if str(d).strip() != ""]
+                    )
+                    selected_dept_filter = st.selectbox(
+                        "🏢 Filtrer par Département :",
+                        options=["Tous les départements"] + list_depts,
+                        key="dg_dept_filter"
+                    )
+
+                    if selected_dept_filter != "Tous les départements":
+                        filtered_df = filtered_df[filtered_df["Département"] == selected_dept_filter]
             else:
-                # Le RH et le Manager voient les employés de leur département ou affectations explicites
                 cond_dept = (
                     df_employees["Département"]
                     .astype(str)
@@ -427,19 +363,31 @@ else:
                     else pd.Series(False, index=df_employees.index)
                 )
 
-                cond_assigned = (
-                    df_employees["Matricule"].astype(str).isin(explicit_mats)
-                    if (explicit_mats and "Matricule" in df_employees.columns)
+                cond_assigned_assignment = (
+                    df_employees["Matricule"].astype(str).str.strip().isin(explicit_mats)
+                    if explicit_mats
                     else pd.Series(False, index=df_employees.index)
                 )
 
-                filtered_df = df_employees[cond_dept | cond_assigned]
+                cond_assigned_direct = (
+                    df_employees["evaluator_username"]
+                    .astype(str)
+                    .str.strip()
+                    == str(current_user).strip()
+                    if "evaluator_username" in df_employees.columns
+                    else pd.Series(False, index=df_employees.index)
+                )
 
-            # Exclure l'utilisateur connecté lui-même
+                filtered_df = df_employees[
+                    cond_dept | cond_assigned_assignment | cond_assigned_direct
+                    ]
+
+            # Exclure l'utilisateur connecté de la liste des évalués s'il y figure
             if "Matricule" in filtered_df.columns:
                 filtered_df = filtered_df[
-                    filtered_df["Matricule"].astype(str) != str(current_user)
-                ]
+                    filtered_df["Matricule"].astype(str).str.strip()
+                    != str(current_user).strip()
+                    ]
 
             employes_list = (
                 filtered_df["Employé"].tolist()
@@ -447,7 +395,6 @@ else:
                 else []
             )
 
-            # 3. MISE EN PAGE EN COLONNES (EFFECTIF + SELECTION)
             col_metric, col_select = st.columns([1, 2])
 
             with col_metric:
@@ -459,17 +406,16 @@ else:
             with col_select:
                 if employes_list:
                     selected_emp = st.selectbox(
-                        "🔍 Sélectionner le collaborateur :", employes_list
+                        "🔍 Sélectionner le collaborateur :", employes_list, key="select_emp_eval"
                     )
                 else:
                     selected_emp = None
-                    st.info("Aucun employé à évaluer trouvé.")
+                    st.info("Aucun employé à évaluer trouvé pour ce filtre.")
 
-            # 4. FICHE ET FORMULAIRE D'ÉVALUATION (APPEL MODULE EVALUATION_VIEW)
             if selected_emp:
                 emp_info = filtered_df[
                     filtered_df["Employé"] == selected_emp
-                ].iloc[0]
+                    ].iloc[0]
 
                 st.markdown("---")
                 c1, c2, c3 = st.columns(3)
@@ -480,38 +426,58 @@ else:
                 )
                 st.markdown("---")
 
-                # --- RÉCUPÉRATION SÉCURISÉE DU SALAIRE ---
                 current_mat = str(emp_info.get("Matricule", "")).strip()
 
                 salaires_map = st.session_state.get("salaires_temp", {})
-                sal_val = salaires_map.get(current_mat)
-
-                if sal_val is None:
-                    sal_val = (
-                        emp_info.get("Salaire_Base")
-                        or emp_info.get("Salaire")
-                        or emp_info.get("Salaire de base")
-                        or 0.0
-                    )
+                sal_val = salaires_map.get(current_mat, 0.0)
 
                 try:
                     sal_val = float(sal_val)
                 except (ValueError, TypeError):
                     sal_val = 0.0
 
-                # --- APPEL DE LA VUE D'ÉVALUATION ---
                 evaluation_view.render_evaluation_page(
                     target_name=selected_emp,
                     target_id=current_mat,
-                    base_salary=sal_val,
                     is_admin=is_admin,
                     is_dg=is_dg,
                     selected_year=selected_year,
                     selected_quarter=selected_quarter,
                 )
 
-    # --- ONGLET 2 : DASHBOARD & SUIVI ---
-    with tab_dash:
-        dashboard_view.render_dashboard_page(
-            user_role=user_role, username=st.session_state.get("username")
+    # --- NAVIGATION PAR ONGLETS SELON LES RÔLES ---
+    if is_rh:
+        tab_eval, tab_dash, tab_emp = st.tabs(
+            [
+                "📝 Faire une évaluation",
+                "📊 Dashboard & Suivi Global",
+                "👥 Gestion Collaborateurs",
+            ]
         )
+
+        with tab_eval:
+            render_evaluation_tab_content()
+
+        with tab_dash:
+            dashboard_view.render_dashboard_page(
+                user_role=user_role, username=st.session_state.get("username")
+            )
+
+        with tab_emp:
+            employee_management_view.render_employee_management_page()
+
+    else:
+        tab_eval, tab_dash = st.tabs(
+            [
+                "📝 Faire une évaluation",
+                "📊 Dashboard & Suivi Global",
+            ]
+        )
+
+        with tab_eval:
+            render_evaluation_tab_content()
+
+        with tab_dash:
+            dashboard_view.render_dashboard_page(
+                user_role=user_role, username=st.session_state.get("username")
+            )
