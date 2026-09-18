@@ -66,3 +66,5 @@ build/
 # Exécutables Windows
 *.exe
 *.xlsx
+# .gitignore
+.streamlit/secrets.toml

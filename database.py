@@ -1,6 +1,7 @@
 import os
 import pyodbc
 import hashlib
+from crypto_utils import decrypt_salary, encrypt_salary
 from dotenv import load_dotenv
 
 #load_dotenv()
@@ -327,3 +328,80 @@ def get_evolution_scores(matricule):
         finally:
             conn.close()
     return history
+
+def save_employee_salary(matricule: str, amount: float):
+    """Insère ou met à jour un salaire chiffré en BDD."""
+    encrypted_val = encrypt_salary(amount)
+    conn = get_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                MERGE dbo.salaires_chiffres AS target
+                USING (SELECT ? AS target_matricule) AS source
+                ON (target.target_matricule = source.target_matricule)
+                WHEN MATCHED THEN
+                    UPDATE SET salaire_encrypted = ?, updated_at = GETDATE()
+                WHEN NOT MATCHED THEN
+                    INSERT (target_matricule, salaire_encrypted) VALUES (?, ?);
+            """,
+                (
+                    str(matricule).strip(),
+                    encrypted_val,
+                    str(matricule).strip(),
+                    encrypted_val,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+def get_employee_salary(matricule: str) -> float:
+    """Récupère et déchiffre le salaire d'un employé depuis la BDD."""
+    conn = get_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT salaire_encrypted FROM dbo.salaires_chiffres WHERE target_matricule = ?",
+                (str(matricule).strip(),),
+            )
+            row = cursor.fetchone()
+            if row and row[0]:
+                return decrypt_salary(row[0])
+        finally:
+            conn.close()
+    return 0.0
+
+def get_criteres_actifs(is_director: bool = False):
+    """Récupère les critères actifs depuis SQL Server."""
+    conn = get_connection()
+    criteres = []
+    if conn:
+        try:
+            cursor = conn.cursor()
+            query = """
+                SELECT code_critere, titre, description, poids, type_critere, cible_role 
+                FROM dbo.criteres 
+                WHERE is_active = 1 AND (cible_role = 'ALL' OR (? = 1 AND cible_role = 'DIRECTEUR'))
+                ORDER BY type_critere DESC, id ASC
+            """
+            cursor.execute(query, (1 if is_director else 0,))
+            rows = cursor.fetchall()
+            for r in rows:
+                criteres.append(
+                    {
+                        "code_critere": r[0],
+                        "titre": r[1],
+                        "description": r[2],
+                        "poids": float(r[3]),
+                        "type_critere": r[4],
+                        "cible_role": r[5],
+                    }
+                )
+        except Exception as e:
+            print(f"Erreur lors de la récupération des critères : {e}")
+        finally:
+            conn.close()
+    return criteres

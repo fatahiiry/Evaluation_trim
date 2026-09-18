@@ -1,3 +1,4 @@
+# main.py
 import pandas as pd
 import streamlit as st
 import auth
@@ -8,6 +9,7 @@ import rh_config_view
 import quarter_utils
 import dashboard_view
 import employee_management_view
+import rh_salary_view
 from ui_styles import apply_custom_styles, reset_password_dialog, inject_modern_css
 
 # Configuration de la page Streamlit
@@ -74,7 +76,10 @@ else:
     df_employees = pd.DataFrame()
     if conn:
         try:
-            df_employees = pd.read_sql("SELECT matricule AS Matricule, nom_complet AS Employé, poste AS Poste, department AS Département, evaluator_username FROM dbo.employees", conn)
+            df_employees = pd.read_sql(
+                "SELECT matricule AS Matricule, nom_complet AS Employé, poste AS Poste, department AS Département, evaluator_username FROM dbo.employees",
+                conn,
+            )
         except Exception:
             pass
         finally:
@@ -218,7 +223,7 @@ else:
                 else:
                     st.warning("Aucun employé trouvé en BDD SQL.")
 
-        # 5. RÉINITIALISATION DU MOT DE PASSE
+        # 4. RÉINITIALISATION DU MOT DE PASSE
         with st.sidebar.expander("🔑 Réinitialiser un mot de passe"):
             all_users_list = auth.get_all_users()
             if all_users_list:
@@ -247,50 +252,6 @@ else:
                             st.error("Erreur lors de la réinitialisation.")
                     else:
                         st.warning("Veuillez saisir un mot de passe.")
-
-        # 6. IMPORT TEMPORAIRE DES SALAIRES
-        with st.sidebar.expander("💰 Import Temporaire des Salaires"):
-            st.caption(
-                "Chargement en mémoire vive (non sauvegardé en BDD pour confidentialité)."
-            )
-            salaires_file = st.file_uploader(
-                "Fichier Excel des salaires (Colonnes : Matricule, Salaire)",
-                type=["xlsx", "xls"],
-                key="salaires_uploader",
-            )
-
-            if salaires_file is not None:
-                try:
-                    df_sal = pd.read_excel(salaires_file)
-
-                    df_sal.columns = [c.strip().lower() for c in df_sal.columns]
-
-                    col_mat = next(
-                        (c for c in df_sal.columns if "mat" in c), None
-                    )
-                    col_sal = next(
-                        (c for c in df_sal.columns if "sal" in c), None
-                    )
-
-                    if col_mat and col_sal:
-                        df_sal[col_mat] = df_sal[col_mat].astype(str).str.strip()
-                        st.session_state["salaires_temp"] = dict(
-                            zip(df_sal[col_mat], df_sal[col_sal])
-                        )
-                        st.success(
-                            f"✅ {len(st.session_state['salaires_temp'])} salaires chargés en mémoire !"
-                        )
-                    else:
-                        st.error(
-                            "Le fichier doit contenir au moins une colonne 'Matricule' et 'Salaire'."
-                        )
-                except Exception as e:
-                    st.error(f"Erreur lors de la lecture du fichier : {e}")
-
-            if "salaires_temp" in st.session_state and st.session_state["salaires_temp"]:
-                if st.button("🗑️ Vider les salaires en mémoire", use_container_width=True):
-                    del st.session_state["salaires_temp"]
-                    st.rerun()
 
     # --- ENTÊTE PRINCIPAL STYLISÉ ---
     st.markdown(
@@ -335,23 +296,28 @@ else:
                 finally:
                     conn.close()
 
-            # --- FILTRAGE DU PÉRIMÈTRE SELON LE RÔLE ---
+            # --- FILTRAGE DU PÉRIMÈTRE PAR DÉPARTEMENT ---
             if is_dg or is_admin:
                 filtered_df = df_employees.copy()
 
-                # Ajout du filtre par Département pour la Direction Générale / Admin
                 if "Département" in filtered_df.columns:
                     list_depts = sorted(
-                        [d for d in filtered_df["Département"].dropna().unique() if str(d).strip() != ""]
+                        [
+                            d
+                            for d in filtered_df["Département"].dropna().unique()
+                            if str(d).strip() != ""
+                        ]
                     )
                     selected_dept_filter = st.selectbox(
                         "🏢 Filtrer par Département :",
                         options=["Tous les départements"] + list_depts,
-                        key="dg_dept_filter"
+                        key="dg_dept_filter",
                     )
 
                     if selected_dept_filter != "Tous les départements":
-                        filtered_df = filtered_df[filtered_df["Département"] == selected_dept_filter]
+                        filtered_df = filtered_df[
+                            filtered_df["Département"] == selected_dept_filter
+                            ]
             else:
                 cond_dept = (
                     df_employees["Département"]
@@ -382,41 +348,105 @@ else:
                     cond_dept | cond_assigned_assignment | cond_assigned_direct
                     ]
 
-            # Exclure l'utilisateur connecté de la liste des évalués s'il y figure
             if "Matricule" in filtered_df.columns:
                 filtered_df = filtered_df[
                     filtered_df["Matricule"].astype(str).str.strip()
                     != str(current_user).strip()
                     ]
 
-            employes_list = (
-                filtered_df["Employé"].tolist()
-                if "Employé" in filtered_df.columns
-                else []
+            # --- RÉCUPÉRATION DES COLLABORATEURS DÉJÀ ÉVALUÉS ---
+            role_to_pass = (
+                "DG" if is_dg else ("Administrateur" if is_admin else "Manager")
             )
+            data_eval = db.get_dashboard_data_by_role(
+                user_role=role_to_pass,
+                username=str(current_user).strip(),
+                year=selected_year,
+                quarter=selected_quarter,
+            )
+
+            evaluated_mats = set()
+            if data_eval:
+                for row in data_eval:
+                    statut = str(row.get("statut", "")).strip()
+                    if statut in ["✅ Fait", "Terminé", "Fait"]:
+                        evaluated_mats.add(str(row.get("matricule", "")).strip())
+
+            # --- NOUVEAU FILTRE : STATUT D'ÉVALUATION (DG / ADMIN) ---
+            if is_dg or is_admin:
+                status_filter = st.radio(
+                    "📌 Statut d'évaluation :",
+                    options=["Tous", "✅ Évalués", "⏳ En attente"],
+                    horizontal=True,
+                    key="dg_status_filter",
+                )
+
+                if status_filter == "✅ Évalués":
+                    selectable_df = filtered_df[
+                        filtered_df["Matricule"].astype(str).str.strip().isin(evaluated_mats)
+                    ].copy()
+                elif status_filter == "⏳ En attente":
+                    selectable_df = filtered_df[
+                        ~filtered_df["Matricule"].astype(str).str.strip().isin(evaluated_mats)
+                    ].copy()
+                else:
+                    selectable_df = filtered_df.copy()
+            else:
+                # Les managers ne voient toujours que les employés non évalués
+                if "Matricule" in filtered_df.columns:
+                    selectable_df = filtered_df[
+                        ~filtered_df["Matricule"]
+                        .astype(str)
+                        .str.strip()
+                        .isin(evaluated_mats)
+                    ].copy()
+                else:
+                    selectable_df = filtered_df.copy()
 
             col_metric, col_select = st.columns([1, 2])
 
+            # Nombre de personnes restant à évaluer dans le périmètre
+            nb_restants = len(
+                filtered_df[
+                    ~filtered_df["Matricule"]
+                    .astype(str)
+                    .str.strip()
+                    .isin(evaluated_mats)
+                ]
+            )
+
             with col_metric:
                 st.metric(
-                    label="👥 Effectif à évaluer :",
-                    value=f"{len(employes_list)} agent(s)",
+                    label="⏳ Reste à évaluer :",
+                    value=f"{nb_restants} agent(s)",
                 )
 
             with col_select:
-                if employes_list:
-                    selected_emp = st.selectbox(
-                        "🔍 Sélectionner le collaborateur :", employes_list, key="select_emp_eval"
+                if not selectable_df.empty:
+                    # Fonction de formatage pour ajouter un statut visuel
+                    def format_emp_option(row):
+                        mat = str(row.get("Matricule", "")).strip()
+                        nom = row.get("Employé", "")
+                        statut_icon = "✅ (Évalué)" if mat in evaluated_mats else "⏳ (En attente)"
+                        return f"{nom} - {statut_icon}" if (is_dg or is_admin) else nom
+
+                    selectable_df["Display_Option"] = selectable_df.apply(format_emp_option, axis=1)
+
+                    selected_option = st.selectbox(
+                        "🔍 Sélectionner le collaborateur :",
+                        options=selectable_df["Display_Option"].tolist(),
+                        key="select_emp_eval",
                     )
+
+                    emp_info = selectable_df[
+                        selectable_df["Display_Option"] == selected_option
+                        ].iloc[0]
+                    selected_emp = emp_info.get("Employé")
                 else:
                     selected_emp = None
-                    st.info("Aucun employé à évaluer trouvé pour ce filtre.")
+                    st.info("ℹ️ Aucun collaborateur ne correspond à ce filtre.")
 
             if selected_emp:
-                emp_info = filtered_df[
-                    filtered_df["Employé"] == selected_emp
-                    ].iloc[0]
-
                 st.markdown("---")
                 c1, c2, c3 = st.columns(3)
                 c1.markdown(f"**Matricule :** `{emp_info.get('Matricule', 'N/A')}`")
@@ -428,30 +458,24 @@ else:
 
                 current_mat = str(emp_info.get("Matricule", "")).strip()
 
-                salaires_map = st.session_state.get("salaires_temp", {})
-                sal_val = salaires_map.get(current_mat, 0.0)
-
-                try:
-                    sal_val = float(sal_val)
-                except (ValueError, TypeError):
-                    sal_val = 0.0
-
                 evaluation_view.render_evaluation_page(
                     target_name=selected_emp,
                     target_id=current_mat,
                     is_admin=is_admin,
                     is_dg=is_dg,
+                    is_rh=is_rh,
                     selected_year=selected_year,
                     selected_quarter=selected_quarter,
                 )
 
     # --- NAVIGATION PAR ONGLETS SELON LES RÔLES ---
     if is_rh:
-        tab_eval, tab_dash, tab_emp = st.tabs(
+        tab_eval, tab_dash, tab_emp, tab_salaires = st.tabs(
             [
                 "📝 Faire une évaluation",
                 "📊 Dashboard & Suivi Global",
                 "👥 Gestion Collaborateurs",
+                "🔒 Salaires Confidentiels",
             ]
         )
 
@@ -466,6 +490,9 @@ else:
         with tab_emp:
             employee_management_view.render_employee_management_page()
 
+        with tab_salaires:
+            rh_salary_view.render_rh_salary_management()
+
     else:
         tab_eval, tab_dash = st.tabs(
             [
@@ -478,6 +505,7 @@ else:
             render_evaluation_tab_content()
 
         with tab_dash:
+            username_val = str(st.session_state.get("username", "")).strip()
             dashboard_view.render_dashboard_page(
-                user_role=user_role, username=st.session_state.get("username")
+                user_role=user_role, username=username_val
             )
