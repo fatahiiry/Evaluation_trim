@@ -405,3 +405,113 @@ def get_criteres_actifs(is_director: bool = False):
         finally:
             conn.close()
     return criteres
+
+def get_criteres_for_target(is_grand_responsable=False, target_matricule=None):
+    conn = get_connection()
+    criteres = []
+    if conn:
+        try:
+            cursor = conn.cursor()
+
+            # Utilisation de ISNULL / COALESCE pour gérer les matricules spécifiques
+            query = """
+                SELECT code_critere, titre, description, poids, type_critere 
+                FROM dbo.criteres 
+                WHERE (cible_role = 'ALL' AND target_matricule IS NULL)
+                   OR (? = 1 AND cible_role = 'CADRE_DIRIGEANT' AND target_matricule IS NULL)
+                   OR (target_matricule = ?)
+            """
+
+            is_leader_flag = 1 if is_grand_responsable else 0
+            clean_mat = str(target_matricule).strip() if target_matricule else ""
+
+            cursor.execute(query, (is_leader_flag, clean_mat))
+
+            columns = [column[0] for column in cursor.description]
+            for row in cursor.fetchall():
+                criteres.append(dict(zip(columns, row)))
+        except Exception as e:
+            print(f"Erreur SQL get_criteres_for_target : {e}")
+        finally:
+            conn.close()
+
+    return criteres
+
+def add_extra_critere(code_critere, titre, description, poids, type_critere, target_matricule=None, cible_role="CADRE_DIRIGEANT"):
+    conn = get_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO dbo.criteres (code_critere, titre, description, poids, type_critere, cible_role, target_matricule)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (code_critere, titre, description, poids, type_critere, cible_role, target_matricule))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+def update_critere(code_critere, titre, description, poids, type_critere):
+    """Met à jour un critère existant et sa pondération."""
+    conn = get_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE dbo.criteres
+                SET titre = ?, description = ?, poids = ?, type_critere = ?
+                WHERE code_critere = ?
+            """, (titre, description, poids, type_critere, code_critere))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+def delete_critere(code_critere):
+    """Supprime un critère spécifique."""
+    conn = get_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM dbo.criteres WHERE code_critere = ?", (code_critere,))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+
+def init_db():
+    conn = get_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+
+            # Création de la table des détails des critères si elle n'existe pas
+            cursor.execute("""
+                IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'dbo.evaluation_details') AND type in (N'U'))
+                BEGIN
+                    CREATE TABLE dbo.evaluation_details (
+                        id INT IDENTITY(1,1) PRIMARY KEY,
+                        evaluation_id INT NOT NULL,
+                        code_critere NVARCHAR(50) NOT NULL,
+                        titre_critere NVARCHAR(255) NULL,
+                        description_critere NVARCHAR(MAX) NULL,
+                        note FLOAT NOT NULL,
+                        poids_applique FLOAT NOT NULL,
+                        created_at DATETIME DEFAULT GETDATE(),
+                        FOREIGN KEY (evaluation_id) REFERENCES dbo.evaluations(id) ON DELETE CASCADE
+                    );
+                END
+            """)
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()

@@ -8,6 +8,7 @@ import evaluation_view
 import rh_config_view
 import quarter_utils
 import dashboard_view
+from suivi_view import render_suivi_page
 import employee_management_view
 import rh_salary_view
 from ui_styles import apply_custom_styles, reset_password_dialog, inject_modern_css
@@ -131,11 +132,11 @@ else:
                     nom_val = new_nom.strip() if new_nom else new_u.strip()
 
                     if auth.create_user(
-                        username=new_u.strip(),
-                        password=new_p,
-                        nom_complet=nom_val,
-                        role=new_role,
-                        department=dept_val,
+                            username=new_u.strip(),
+                            password=new_p,
+                            nom_complet=nom_val,
+                            role=new_role,
+                            department=dept_val,
                     ):
                         st.success(
                             f"Compte '{new_u}' ({new_role}) créé avec succès !"
@@ -157,9 +158,9 @@ else:
                 )
 
                 if (
-                    not df_employees.empty
-                    and "Matricule" in df_employees.columns
-                    and "Employé" in df_employees.columns
+                        not df_employees.empty
+                        and "Matricule" in df_employees.columns
+                        and "Employé" in df_employees.columns
                 ):
                     df_temp = df_employees.copy()
                     df_temp["Matricule_Str"] = df_temp["Matricule"].astype(str)
@@ -212,10 +213,10 @@ else:
                     ]
 
                     if st.button(
-                        "Enregistrer les affectations", use_container_width=True
+                            "Enregistrer les affectations", use_container_width=True
                     ):
                         if auth.save_user_assignments(
-                            selected_evaluator, selected_mats_to_save
+                                selected_evaluator, selected_mats_to_save
                         ):
                             st.success("Affectations enregistrées !")
                         else:
@@ -239,11 +240,11 @@ else:
                 )
 
                 if st.button(
-                    "Réinitialiser le mot de passe", use_container_width=True
+                        "Réinitialiser le mot de passe", use_container_width=True
                 ):
                     if user_to_reset and temp_password:
                         if auth.admin_reset_password(
-                            user_to_reset, temp_password
+                                user_to_reset, temp_password
                         ):
                             st.success(
                                 f"Mot de passe de '{user_to_reset}' réinitialisé !"
@@ -253,7 +254,7 @@ else:
                     else:
                         st.warning("Veuillez saisir un mot de passe.")
 
-    # --- ENTÊTE PRINCIPAL STYLISÉ ---
+    # --- ENTÊTE PRINCIPAL
     st.markdown(
         """
         <div class="main-header">
@@ -263,6 +264,7 @@ else:
     """,
         unsafe_allow_html=True,
     )
+
 
     # --- FONCTION INTERNE DE RENDU DU FORMULAIRE D'ÉVALUATION ---
     def render_evaluation_tab_content():
@@ -457,10 +459,12 @@ else:
                 st.markdown("---")
 
                 current_mat = str(emp_info.get("Matricule", "")).strip()
+                target_job_title = str(emp_info.get("Poste", "")).strip()
 
                 evaluation_view.render_evaluation_page(
                     target_name=selected_emp,
                     target_id=current_mat,
+                    target_job_title=target_job_title,
                     is_admin=is_admin,
                     is_dg=is_dg,
                     is_rh=is_rh,
@@ -468,44 +472,111 @@ else:
                     selected_quarter=selected_quarter,
                 )
 
+
+    # --- FONCTION DE GESTION ET MODIFICATION DES CRITÈRES ---
+    def render_admin_criteres_tab():
+        st.subheader("⚙️ Modification et Pondération des Critères")
+        st.caption("Ajustez les titres, descriptions, types et coefficients (poids) applicables aux évaluations.")
+
+        conn = db.get_connection()
+        all_criteres = []
+        if conn:
+            try:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT code_critere, titre, description, poids, type_critere, cible_role, target_matricule 
+                    FROM dbo.criteres
+                    ORDER BY code_critere ASC
+                """)
+                columns = [col[0] for col in cursor.description]
+                all_criteres = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            except Exception as e:
+                st.error(f"Erreur lors de la récupération des critères : {e}")
+            finally:
+                conn.close()
+
+        if not all_criteres:
+            st.info("Aucun critère enregistré en base de données.")
+            return
+
+        for crit in all_criteres:
+            code = crit["code_critere"]
+            cible = crit["target_matricule"] if crit["target_matricule"] else crit["cible_role"]
+
+            with st.expander(f"🔹 `{code}` — {crit['titre']} (Cible : {cible})"):
+                with st.form(key=f"form_edit_crit_{code}"):
+                    col1, col2 = st.columns([2, 1])
+
+                    with col1:
+                        new_titre = st.text_input("Titre du critère", value=crit["titre"], key=f"t_{code}")
+                        new_desc = st.text_area("Description / Attentes", value=crit["description"] or "",
+                                                key=f"d_{code}")
+
+                    with col2:
+                        new_poids = st.number_input(
+                            "Pondération (Poids)",
+                            min_value=0.01,
+                            max_value=1.0,
+                            value=float(crit["poids"]) if crit["poids"] is not None else 0.1,
+                            step=0.05,
+                            key=f"p_{code}"
+                        )
+                        current_type_idx = 0 if crit["type_critere"] == "INDIVIDUEL" else 1
+                        new_type = st.selectbox(
+                            "Type de critère",
+                            options=["INDIVIDUEL", "COLLECTIF"],
+                            index=current_type_idx,
+                            key=f"tp_{code}"
+                        )
+
+                    if st.form_submit_button("💾 Enregistrer les modifications", type="primary"):
+                        try:
+                            db.update_critere(
+                                code_critere=code,
+                                titre=new_titre,
+                                description=new_desc,
+                                poids=new_poids,
+                                type_critere=new_type
+                            )
+                            st.success(f"✅ Critère `{code}` mis à jour avec succès !")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Erreur de mise à jour : {e}")
+
+
     # --- NAVIGATION PAR ONGLETS SELON LES RÔLES ---
+    # Construction dynamique des onglets
+    tabs_list = ["📝 Faire une évaluation", "📊 Dashboard & Suivi Global"]
+
+    if is_admin:
+        tabs_list.append("⚙️ Gestion des Critères")
+
     if is_rh:
-        tab_eval, tab_dash, tab_emp, tab_salaires = st.tabs(
-            [
-                "📝 Faire une évaluation",
-                "📊 Dashboard & Suivi Global",
-                "👥 Gestion Collaborateurs",
-                "🔒 Salaires Confidentiels",
-            ]
+        tabs_list.extend(["👥 Gestion Collaborateurs", "🔒 Salaires Confidentiels"])
+
+    created_tabs = st.tabs(tabs_list)
+
+    # Affectation des contenus
+    with created_tabs[0]:
+        render_evaluation_tab_content()
+
+    with created_tabs[1]:
+        username_val = str(st.session_state.get("username", "")).strip()
+        dashboard_view.render_dashboard_page(
+            user_role=user_role, username=username_val
         )
 
-        with tab_eval:
-            render_evaluation_tab_content()
+    # Rendu dynamique pour Admin/DG/RH
+    idx = 2
+    if is_admin:
+        with created_tabs[idx]:
+            render_admin_criteres_tab()
+        idx += 1
 
-        with tab_dash:
-            dashboard_view.render_dashboard_page(
-                user_role=user_role, username=st.session_state.get("username")
-            )
-
-        with tab_emp:
+    if is_rh:
+        with created_tabs[idx]:
             employee_management_view.render_employee_management_page()
+        idx += 1
 
-        with tab_salaires:
+        with created_tabs[idx]:
             rh_salary_view.render_rh_salary_management()
-
-    else:
-        tab_eval, tab_dash = st.tabs(
-            [
-                "📝 Faire une évaluation",
-                "📊 Dashboard & Suivi Global",
-            ]
-        )
-
-        with tab_eval:
-            render_evaluation_tab_content()
-
-        with tab_dash:
-            username_val = str(st.session_state.get("username", "")).strip()
-            dashboard_view.render_dashboard_page(
-                user_role=user_role, username=username_val
-            )
