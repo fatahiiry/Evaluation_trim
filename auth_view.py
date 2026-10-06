@@ -1,7 +1,38 @@
 import streamlit as st
 import auth
 
+# auth_view.py (ou votre fonction login_page)
 
+import streamlit as st
+import auth
+
+def render_login():
+    st.title("🔐 Connexion")
+
+    with st.form("login_form"):
+        username_input = st.text_input("Identifiant / Matricule")
+        password_input = st.text_input("Mot de passe", type="password")
+        submit = st.form_submit_button("Se connecter", use_container_width=True)
+
+    if submit:
+        # Vérification du mot de passe dans la BDD
+        role = auth.check_user_db(username_input, password_input)
+
+        # ---> INSERER LE BLOC ICI <---
+        if role:
+            st.session_state["authenticated"] = True
+            st.session_state["username"] = username_input
+            st.session_state["role"] = role
+
+            # Récupération des infos utilisateur
+            user_info = auth.get_user_details(username_input)
+            st.session_state["nom_complet"] = user_info["nom_complet"]
+            st.session_state["matricule"] = username_input
+            st.session_state["department"] = user_info["department"]
+
+            st.rerun()
+        else:
+            st.error("Identifiant ou mot de passe incorrect.")
 def render_login_page():
     st.markdown(
         """

@@ -1,4 +1,5 @@
 import streamlit as st
+import auth
 
 
 def apply_custom_styles():
@@ -128,30 +129,34 @@ def inject_modern_css():
         unsafe_allow_html=True,
     )
 
-
 @st.dialog("🔑 Modifier mon mot de passe")
 def reset_password_dialog():
-    """Boîte de dialogue pour le changement de mot de passe."""
-    import auth
-
-    old_p = st.text_input("🆕 Ancien mot de passe", type="password")
-    new_p = st.text_input("🔄 Nouveau mot de passe", type="password")
+    """Boîte de dialogue pour le changement de mot de passe utilisateur."""
+    old_p = st.text_input("🔑 Ancien mot de passe", type="password")
+    new_p = st.text_input("🆕 Nouveau mot de passe", type="password")
     confirm_p = st.text_input(
         "🔄 Confirmer le nouveau mot de passe", type="password"
     )
 
-    if st.button("Valider la modification", use_container_width=True):
+    st.caption(
+        "📌 *Exigences : 8 caractères minimum, au moins 1 majuscule, 1 minuscule et 1 chiffre.*"
+    )
+
+    if st.button("Valider la modification", use_container_width=True, type="primary"):
         if not old_p or not new_p or not confirm_p:
             st.error("Veuillez remplir tous les champs.")
         elif new_p != confirm_p:
             st.error("Les nouveaux mots de passe ne correspondent pas.")
         else:
             current_user = st.session_state.get("username")
-            if auth.verify_password(current_user, old_p):
-                if auth.update_password(current_user, new_p):
-                    st.success("Mot de passe modifié avec succès !")
+            if not current_user:
+                st.error("Utilisateur non identifié. Veuillez vous re-connecter.")
+            elif auth.verify_password(current_user, old_p):
+                success, msg = auth.update_password(current_user, new_p)
+                if success:
+                    st.success(msg)
                     st.rerun()
                 else:
-                    st.error("Erreur lors de la mise à jour en BDD.")
+                    st.error(msg)
             else:
                 st.error("L'ancien mot de passe est incorrect.")

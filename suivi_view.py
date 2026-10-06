@@ -2,10 +2,7 @@ import streamlit as st
 import pandas as pd
 import database as db
 
-
-# ==============================================================================
 # 1. POP-UP DES DÉTAILS DE L'ÉVALUATION (@st.dialog)
-# ==============================================================================
 @st.dialog("📋 Détails de l'évaluation", width="large")
 def show_evaluation_details(matricule, nom_complet, year, quarter):
     st.markdown(f"**Collaborateur :** {nom_complet} (`{matricule}`)")

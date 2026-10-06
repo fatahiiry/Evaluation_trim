@@ -485,7 +485,6 @@ def delete_critere(code_critere):
         finally:
             conn.close()
 
-
 def init_db():
     conn = get_connection()
     if conn:
