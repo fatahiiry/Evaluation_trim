@@ -1,8 +1,9 @@
 # main.py
+import time
 import os
 import pandas as pd
 import streamlit as st
-
+import session_cookie
 import auth
 from auth_view import render_login_page
 import dashboard_view
@@ -31,19 +32,23 @@ apply_custom_styles()
 inject_modern_css()
 
 # Gestion de l'état de session
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
-if "username" not in st.session_state:
-    st.session_state["username"] = None
-if "role" not in st.session_state:
-    st.session_state["role"] = None
+for key in ["authenticated", "username", "role"]:
+    if key not in st.session_state:
+        st.session_state[key] = False if key == "authenticated" else None
 
+# Gestionnaire de cookies (une seule instance par run)
+cookie_manager = session_cookie.get_cookie_manager()
+session_cookie.restaurer_session(cookie_manager)
+if not st.session_state["authenticated"] and not st.session_state.get("cookie_ready"):
+    st.session_state["cookie_ready"] = True
+    st.markdown("⏳ Chargement…")
+    st.stop()
 
 # ------------------------------------------------------------------------------
 # 2. MIRE DE CONNEXION
 # ------------------------------------------------------------------------------
 if not st.session_state["authenticated"]:
-    render_login_page()
+    render_login_page(cookie_manager)
 
 
 # ------------------------------------------------------------------------------
@@ -119,12 +124,15 @@ else:
                 reset_password_dialog()
         with col_logout:
             if st.button("🚪 Sortir", use_container_width=True, help="Déconnexion"):
+                session_cookie.supprimer_session(cookie_manager)
+                st.session_state["logged_out"] = True
                 st.session_state["authenticated"] = False
                 st.session_state["username"] = None
                 st.session_state["role"] = None
                 st.session_state["nom_complet"] = None
                 st.session_state["matricule"] = None
                 st.session_state["department"] = None
+                time.sleep(0.5)
                 st.rerun()
 
     # Charger la liste globale des employés depuis SQL Server
@@ -649,7 +657,7 @@ else:
                 c3.caption(f"👥 {row['nb_collaborateurs']} agent(s)")
 
                 # Modification directe du rôle
-                roles_options = ["Manager", "Évaluateur", "Administrateur", "RH"]
+                roles_options = ["Manager", "Évaluateur", "Administrateur", "RH","DG"]
                 current_role_index = (
                     roles_options.index(row["role"])
                     if row["role"] in roles_options

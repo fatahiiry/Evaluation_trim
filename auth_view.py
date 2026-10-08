@@ -1,39 +1,10 @@
+import time
 import streamlit as st
 import auth
+import session_cookie
 
-# auth_view.py (ou votre fonction login_page)
 
-import streamlit as st
-import auth
-
-def render_login():
-    st.title("🔐 Connexion")
-
-    with st.form("login_form"):
-        username_input = st.text_input("Identifiant / Matricule")
-        password_input = st.text_input("Mot de passe", type="password")
-        submit = st.form_submit_button("Se connecter", use_container_width=True)
-
-    if submit:
-        # Vérification du mot de passe dans la BDD
-        role = auth.check_user_db(username_input, password_input)
-
-        # ---> INSERER LE BLOC ICI <---
-        if role:
-            st.session_state["authenticated"] = True
-            st.session_state["username"] = username_input
-            st.session_state["role"] = role
-
-            # Récupération des infos utilisateur
-            user_info = auth.get_user_details(username_input)
-            st.session_state["nom_complet"] = user_info["nom_complet"]
-            st.session_state["matricule"] = username_input
-            st.session_state["department"] = user_info["department"]
-
-            st.rerun()
-        else:
-            st.error("Identifiant ou mot de passe incorrect.")
-def render_login_page():
+def render_login_page(cookie_manager):
     st.markdown(
         """
     <style>
@@ -123,18 +94,15 @@ def render_login_page():
         unsafe_allow_html=True,
     )
 
-    # Centrage sur la page
-    _, col_center, _ = st.columns([1, 1.5, 1])
+    _, col_center, _ = st.columns([1, 2, 1])
 
     with col_center:
-        with st.container(border=True):
-            # Bandeau bleu avec texte blanc agrandi
+        with st.container(border=True, key="login_card"):
             st.markdown(
                 "<div class='login-header-banner'>🔐 Connexion EVALUATION</div>",
                 unsafe_allow_html=True,
             )
 
-            # Champs de saisie et boutons dans le corps de la carte
             username = st.text_input(
                 "👤 Identifiant / Matricule",
                 placeholder="Entrez votre identifiant",
@@ -147,22 +115,34 @@ def render_login_page():
                 key="login_password",
             )
 
-            st.write("")  # Espace
+            st.write("")
 
             col_btn1, col_btn2 = st.columns([1, 1])
 
             with col_btn1:
                 if st.button(
-                        "Se connecter", type="primary", use_container_width=True
+                    "Se connecter", type="primary", use_container_width=True
                 ):
                     if username and password:
                         role = auth.check_user_db(
                             username.strip(), password.strip()
                         )
                         if role:
+                            user = username.strip()
                             st.session_state["authenticated"] = True
-                            st.session_state["username"] = username.strip()
+                            st.session_state["username"] = user
                             st.session_state["role"] = role
+
+                            user_info = auth.get_user_details(user)
+                            st.session_state["nom_complet"] = user_info["nom_complet"]
+                            st.session_state["matricule"] = user
+                            st.session_state["department"] = user_info["department"]
+                            st.session_state["logged_out"] = False
+
+                            session_cookie.sauvegarder_session(
+                                cookie_manager, user, role
+                            )
+                            time.sleep(0.5)  # laisse le cookie s'écrire
                             st.rerun()
                         else:
                             st.error("Identifiant ou mot de passe incorrect.")
